@@ -19,7 +19,7 @@ def gen_mac(last_octet=None):
     """Generate a random MAC address that is in the qemu OUI space and that
     has the given last octet.
     """
-    return "52:54:00:%02x:%02x:%02x" % (
+    return "52:54:00:{:02x}:{:02x}:{:02x}".format(
         random.randint(0x00, 0xFF),
         random.randint(0x00, 0xFF),
         last_octet,
@@ -149,7 +149,7 @@ class VM:
 
         # setup PCI buses
         for i in range(1, math.ceil(self.num_nics / self.nics_per_pci_bus) + 1):
-            cmd.extend(["-device", "pci-bridge,chassis_nr={},id=pci.{}".format(i, i)])
+            cmd.extend(["-device", f"pci-bridge,chassis_nr={i},id=pci.{i}"])
 
         # generate mgmt NICs
         cmd.extend(self.gen_mgmt())
@@ -371,7 +371,7 @@ class VM:
                     "link",
                     intf,
                     "name",
-                    "macvtap{}".format(idx + 1),
+                    f"macvtap{idx + 1}",
                     "type",
                     "macvtap",
                     "mode",
@@ -384,7 +384,7 @@ class VM:
                     "link",
                     "set",
                     "dev",
-                    "macvtap{}".format(idx + 1),
+                    f"macvtap{idx + 1}",
                     "up",
                 ],
             )
@@ -408,7 +408,9 @@ class VM:
         return res
 
     def nic_provision_delay(self) -> None:
-        self.logger.debug(f"number of provisioned data plane interfaces is {self.num_provisioned_nics}")
+        self.logger.debug(
+            f"number of provisioned data plane interfaces is {self.num_provisioned_nics}"
+        )
 
         if self.num_provisioned_nics == 0:
             # no nics provisioned and/or not running from containerlab so we can bail
@@ -426,7 +428,10 @@ class VM:
             provisioned_nics = list(inf_path.glob("eth*"))
             # if we see num provisioned +1 (for mgmt) we have all nics ready to roll!
             if len(provisioned_nics) >= self.num_provisioned_nics + 1:
-                nics = [int(re.search(pattern=r"\d+", string=nic.name).group()) for nic in provisioned_nics]
+                nics = [
+                    int(re.search(pattern=r"\d+", string=nic.name).group())
+                    for nic in provisioned_nics
+                ]
 
                 # Ensure the max eth is in range of allocated eth index of VM LC
                 nics = [nic for nic in nics if nic in range(start_eth, end_eth)]
@@ -501,24 +506,25 @@ class VM:
                         "%(nic_type)s,"
                         "netdev=p%(i)02d,"
                         "bus=pci.%(pci_bus)s,"
-                        "addr=0x%(addr)x" % {
+                        "addr=0x%(addr)x"
+                        % {
                             "nic_type": self.nic_type,
                             "i": i,
                             "pci_bus": pci_bus,
                             "addr": addr,
                         },
                         "-netdev",
-                        "socket,id=p%(i)02d,listen=:%(j)02d" % {"i": i, "j": i + 10000}
-                     ]
+                        "socket,id=p%(i)02d,listen=:%(j)02d" % {"i": i, "j": i + 10000},
+                    ]
                 )
                 continue
 
             mac = ""
             if self.conn_mode == "macvtap":
                 # get macvtap interface mac that will be used in qemu nic config
-                if not os.path.exists("/sys/class/net/macvtap{}/address".format(i)):
+                if not os.path.exists(f"/sys/class/net/macvtap{i}/address"):
                     continue
-                with open("/sys/class/net/macvtap%s/address" % i, "r") as f:
+                with open("/sys/class/net/macvtap%s/address" % i) as f:
                     mac = f.readline().strip("\n")
             else:
                 mac = gen_mac(i)
@@ -544,11 +550,11 @@ class VM:
             if self.conn_mode == "macvtap":
                 # if required number of nics exceeds the number of attached interfaces
                 # we skip excessive ones
-                if not os.path.exists("/sys/class/net/macvtap{}/ifindex".format(i)):
+                if not os.path.exists(f"/sys/class/net/macvtap{i}/ifindex"):
                     continue
                 # init value of macvtap ifindex
                 tapidx = 0
-                with open("/sys/class/net/macvtap%s/ifindex" % i, "r") as f:
+                with open("/sys/class/net/macvtap%s/ifindex" % i) as f:
                     tapidx = f.readline().strip("\n")
 
                 fd = 100 + i  # fd start number for tap iface
@@ -632,11 +638,11 @@ class VM:
             con_name = "qemu monitor"
 
         if wait:
-            self.logger.trace("waiting for '%s' on %s" % (wait, con_name))
+            self.logger.trace("waiting for '{}' on {}".format(wait, con_name))
             res = con.read_until(wait.encode())
-            self.logger.trace("read from %s: %s" % (con_name, res.decode()))
-        self.logger.debug("writing to %s: %s" % (con_name, cmd))
-        con.write("{}\r".format(cmd).encode())
+            self.logger.trace("read from {}: {}".format(con_name, res.decode()))
+        self.logger.debug("writing to {}: {}".format(con_name, cmd))
+        con.write(f"{cmd}\r".encode())
 
     def work(self):
         self.check_qemu()
