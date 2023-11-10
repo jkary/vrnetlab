@@ -164,7 +164,7 @@ class VM:
 
         # setup PCI buses
         for i in range(1, math.ceil(self.num_nics / self.nics_per_pci_bus) + 1):
-            cmd.extend(["-device", "pci-bridge,chassis_nr={},id=pci.{}".format(i, i)])
+            cmd.extend(["-device", f"pci-bridge,chassis_nr={i},id=pci.{i}"])
 
         # generate mgmt NICs
         cmd.extend(self.gen_mgmt())
@@ -385,7 +385,7 @@ class VM:
                     "link",
                     intf,
                     "name",
-                    "macvtap{}".format(idx + 1),
+                    f"macvtap{idx + 1}",
                     "type",
                     "macvtap",
                     "mode",
@@ -398,7 +398,7 @@ class VM:
                     "link",
                     "set",
                     "dev",
-                    "macvtap{}".format(idx + 1),
+                    f"macvtap{idx + 1}",
                     "up",
                 ],
             )
@@ -495,7 +495,7 @@ class VM:
         pci_bus_ctr = 0
         for i in range(start_eth, end_eth):
             # PCI bus counter is to ensure pci bus index starts from 1
-            # and continuing in sequence regardles the eth index
+            # and continuing in sequence regardless the eth index
             pci_bus_ctr += 1
 
             # calc which PCI bus we are on and the local add on that PCI bus
@@ -536,9 +536,9 @@ class VM:
             mac = ""
             if self.conn_mode == "macvtap":
                 # get macvtap interface mac that will be used in qemu nic config
-                if not os.path.exists("/sys/class/net/macvtap{}/address".format(i)):
+                if not os.path.exists(f"/sys/class/net/macvtap{i}/address"):
                     continue
-                with open("/sys/class/net/macvtap%s/address" % i, "r") as f:
+                with open("/sys/class/net/macvtap%s/address" % i) as f:
                     mac = f.readline().strip("\n")
             else:
                 mac = gen_mac(i)
@@ -564,11 +564,11 @@ class VM:
             if self.conn_mode == "macvtap":
                 # if required number of nics exceeds the number of attached interfaces
                 # we skip excessive ones
-                if not os.path.exists("/sys/class/net/macvtap{}/ifindex".format(i)):
+                if not os.path.exists(f"/sys/class/net/macvtap{i}/ifindex"):
                     continue
                 # init value of macvtap ifindex
                 tapidx = 0
-                with open("/sys/class/net/macvtap%s/ifindex" % i, "r") as f:
+                with open("/sys/class/net/macvtap%s/ifindex" % i) as f:
                     tapidx = f.readline().strip("\n")
 
                 fd = 100 + i  # fd start number for tap iface
@@ -652,23 +652,11 @@ class VM:
             con_name = "qemu monitor"
 
         if wait:
-            # use class default wait pattern if none was explicitly specified
-            if wait == "__defaultpattern__":
-                wait = self.wait_pattern
-            self.logger.trace(f"waiting for '{wait}' on {con_name}")
+            self.logger.trace("waiting for '{}' on {}".format(wait, con_name))
             res = con.read_until(wait.encode())
-
-            cleaned_buf = (
-                (con.read_very_eager()) if clean_buffer else None
-            )  # Clear any remaining characters in buffer
-
-            self.logger.trace(f"read from {con_name}: '{res.decode()}'")
-            # log the cleaned buffer if it's not empty
-            if cleaned_buf:
-                self.logger.trace(f"cleaned buffer: '{cleaned_buf.decode()}'")
-
-        self.logger.debug(f"writing to {con_name}: '{cmd}'")
-        con.write("{}\r".format(cmd).encode())
+            self.logger.trace("read from {}: {}".format(con_name, res.decode()))
+        self.logger.debug("writing to {}: {}".format(con_name, cmd))
+        con.write(f"{cmd}\r".encode())
 
     def work(self):
         self.check_qemu()

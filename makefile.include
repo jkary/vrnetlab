@@ -1,5 +1,6 @@
 VR_NAME=$(shell basename $$(pwd))
-IMAGES=$(shell ls $(IMAGE_GLOB) 2>/dev/null)
+IMAGES=$(shell ls *.qcow2 2>/dev/null)
+# IMAGES=$(shell ls $(IMAGE_GLOB) 2>/dev/null)
 NUM_IMAGES=$(shell ls $(IMAGES) | wc -l)
 
 ifeq ($(NUM_IMAGES), 0)
