@@ -14,6 +14,7 @@ RUN apt-get update -qy \
    tcpdump \
    procps \
    openvswitch-switch \
+   telnet \
    && rm -rf /var/lib/apt/lists/*
 
 ARG IMAGE
