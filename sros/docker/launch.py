@@ -7,9 +7,8 @@ import re
 import shutil
 import signal
 import sys
-from typing import Dict
 from dataclasses import dataclass
-
+from typing import Dict
 
 import vrnetlab
 
@@ -182,6 +181,30 @@ SROS_VARIANTS = {
             integrated=True,
         ),
     },
+    "ixr-e2c": {
+        "deployment_model": "integrated",
+        "min_ram": 4,  # minimum RAM requirements
+        "max_nics": 30,
+        **line_card_config(
+            chassis="ixr-e2c",
+            card="cpm-ixr-e2c",
+            card_type="imm12-sfp28+2-qsfp28",
+            mda="m12-sfp28+2-qsfp28",
+            integrated=True,
+        ),
+    },
+    "ixr-e2": {
+        "deployment_model": "integrated",
+        "min_ram": 4,  # minimum RAM requirements
+        "max_nics": 30,
+        **line_card_config(
+            chassis="ixr-e2",
+            card="cpm-ixr-e2",
+            card_type="imm2-qsfpdd+2-qsfp28+24-sfp28",
+            mda="m2-qsfpdd+2-qsfp28+24-sfp28",
+            integrated=True,
+        ),
+    },
     "sr-1s": {
         "deployment_model": "integrated",
         "min_ram": 6,  # minimum RAM requirements
@@ -275,10 +298,6 @@ SROS_VARIANTS = {
                 /configure sfm 2 sfm-type sfm-s
                 /configure sfm 3 sfm-type sfm-s
                 /configure sfm 4 sfm-type sfm-s
-                /configure sfm 5 sfm-type sfm-s
-                /configure sfm 6 sfm-type sfm-s
-                /configure sfm 7 sfm-type sfm-s
-                /configure sfm 8 sfm-type sfm-s
                 /configure card 1 card-type xcm-7s
                 /configure card 1 mda 1 mda-type s36-100gb-qsfp28
                 """,
@@ -353,14 +372,16 @@ SROS_VARIANTS = {
             "timos_line": "slot=A chassis=sr-1e card=cpm-e",
         },
         # line card (IOM/XCM)
-        "lc": {
-            "min_ram": 4,
-            "timos_line": "chassis=sr-1e slot=1 card=iom-e mda/1=me12-10/1gb-sfp+ mda/2=isa2-tunnel",
-            "card_config": """/configure card 1 card-type iom-e
+        "lcs": [
+            {
+                "min_ram": 4,
+                "timos_line": "chassis=sr-1e slot=1 card=iom-e mda/1=me12-10/1gb-sfp+ mda/2=isa2-tunnel",
+                "card_config": """/configure card 1 card-type iom-e
             /configure card 1 mda 1 mda-type me12-10/1gb-sfp+
             /configure card 1 mda 2 mda-type isa2-tunnel
             """,
-        },
+            },
+        ],
     },
     "sr-a4": {
         "deployment_model": "distributed",
@@ -371,12 +392,15 @@ SROS_VARIANTS = {
             "timos_line": "slot=A chassis=sr-a4 card=cpm-a",
         },
         # line card (IOM/XCM)
-        "lc": {
-            "min_ram": 4,
-            **line_card_config(
-                chassis="sr-a4", card="iom-a", mda="maxp10-10/1gb-msec-sfp+"
-            ),
-        },
+        "lcs": [
+            {
+                "min_ram": 4,
+                "timos_line": "slot=A chassis=sr-a4 card=cpm-a",
+                **line_card_config(
+                    chassis="sr-a4", card="iom-a", mda="maxp10-10/1gb-msec-sfp+"
+                ),
+            },
+        ],
     },
     "sr-1x-48d": {
         "deployment_model": "distributed",
@@ -438,8 +462,8 @@ SROS_CL_COMMON_CFG = """
 /configure system security user "admin" access netconf
 /configure system security user "admin" access console
 /configure system security user "admin" access grpc
-/configure system security user "admin" access snmp
 /configure system security user "admin" access ftp
+/configure system security snmp community "public" r version v2c
 """
 
 # SR OS Model-Driven CLI common configuration
@@ -458,9 +482,10 @@ SROS_MD_COMMON_CFG = """
 /configure system management-interface snmp streaming admin-state enable
 /configure system security user-params local-user user "admin" access console true
 /configure system security user-params local-user user "admin" access ftp true
-/configure system security user-params local-user user "admin" access snmp true
 /configure system security user-params local-user user "admin" access netconf true
 /configure system security user-params local-user user "admin" access grpc true
+/configure system security snmp community "public" access-permissions r
+/configure system security snmp community "public" version v2c
 """
 
 # to allow writing config to tftp location we needed to spin up a normal
@@ -492,6 +517,14 @@ def parse_variant_line(cfg, obj, skip_nics=False):
 
         if "ram=" in elem:
             obj["min_ram"] = elem.split("=")[1]
+            continue
+
+        # Optional CF. This indicates the SIZE to be passed directly to qemu-img create (eg: cf1=1G)
+        if "cf1=" in elem:
+            obj["cf1"] = elem.split("=")[1]
+            continue
+        if "cf2=" in elem:
+            obj["cf2"] = elem.split("=")[1]
             continue
 
         if "slot=" in elem:
@@ -620,7 +653,14 @@ def gen_bof_config():
 
 class SROS_vm(vrnetlab.VM):
     def __init__(self, username, password, ram, conn_mode, cpu=2, num=0):
-        super().__init__(username, password, disk_image="/sros.qcow2", num=num, ram=ram)
+        super().__init__(
+            username,
+            password,
+            disk_image="/sros.qcow2",
+            num=num,
+            ram=ram,
+            driveif="virtio",
+        )
         self.nic_type = "virtio-net-pci"
         self.conn_mode = conn_mode
         self.uuid = "00000000-0000-0000-0000-000000000000"
@@ -634,9 +674,29 @@ class SROS_vm(vrnetlab.VM):
         # override default wait pattern with hash followed by the space
         self.wait_pattern = "# "
 
+    def attach_cf(self, slot, cfname, size):
+        """Attach extra CF. Create if needed."""
+        path = f"/tftpboot/{cfname}_{slot}.qcow2"
+
+        if not os.path.exists(path):
+            logger.debug(
+                f"Slot {slot}: creating {cfname} disk with size {size} -> {path}"
+            )
+            vrnetlab.run_command(["qemu-img", "create", "-f", "qcow2", path, size])
+        else:
+            logger.debug(
+                f"Slot {slot}: bypassed creation of {cfname} disk because it already exist -> {path}. "
+            )
+
+        disk_idx = 1
+        if cfname == "cf2":
+            disk_idx = 2
+
+        self.qemu_args.extend(["-drive", f"if=virtio,index={disk_idx},file={path}"])
+
     # override wait_write clean_buffer parameter default
     def wait_write(self, cmd, wait="__defaultpattern__", con=None, clean_buffer=True):
-        super().wait_write( cmd, wait, con, clean_buffer)
+        super().wait_write(cmd, wait, con, clean_buffer)
 
     def bootstrap_spin(self):
         """This function should be called periodically to do work."""
@@ -789,6 +849,16 @@ class SROS_vm(vrnetlab.VM):
         """Common function used to push initial configuration for bof and config to
         both integrated and distributed nodes."""
 
+        # configure bof before we check if config file was provided
+        # since bof statements are not part of the config file
+        # thus it must be applied unconditionally
+        self.enterBofConfig()
+        for line in iter(gen_bof_config()):
+            self.wait_write(line)
+        self.commitBofConfig()
+        # save bof config on disk
+        self.persistBofAndConfig()
+
         # apply common configuration if config file was not provided
         if not os.path.isfile("/tftpboot/config.txt"):
             self.logger.info("Applying basic SR OS configuration...")
@@ -810,15 +880,6 @@ class SROS_vm(vrnetlab.VM):
 
             self.commitConfig()
 
-            # configure bof
-            self.enterBofConfig()
-            for line in iter(gen_bof_config()):
-                self.wait_write(line)
-            self.commitBofConfig()
-
-            # save bof config on disk
-            self.persistBofAndConfig()
-
             self.switchConfigEngine()
 
             # logout at the end of execution
@@ -833,6 +894,7 @@ class SROS_integrated(SROS_vm):
     ):
         ram: int = vrnetlab.getMem("integrated", variant.get("min_ram"))
         cpu: int = vrnetlab.getCpu("integrated", variant.get("cpu"))
+        slot: str = variant.get("slot")
 
         super().__init__(
             username,
@@ -854,6 +916,11 @@ class SROS_integrated(SROS_vm):
         self.variant = variant
         self.hostname = hostname
 
+        for cf in ["cf1", "cf2"]:
+            size: str = variant.get(cf)
+            if size is not None:
+                self.attach_cf(slot=slot, cfname=cf, size=size)
+
     def gen_mgmt(self):
         """
         Generate SR OS MGMT interface connected to a mgmt bridge
@@ -869,12 +936,12 @@ class SROS_integrated(SROS_vm):
         res.append("-netdev")
         res.append("bridge,br=br-mgmt,id=br-mgmt" % {"i": 0})
 
-        if (
-            "chassis=ixr-r6" in self.variant["timos_line"]
-            or "chassis=ixr-ec" in self.variant["timos_line"]
+        if any(
+            chassis in self.variant["timos_line"]
+            for chassis in ["chassis=ixr-r6", "chassis=ixr-ec", "chassis=ixr-e2", "chassis=ixr-e2c"]
         ):
             logger.debug(
-                "detected ixr-r6/ec chassis, creating a dummy network device for SFM connection"
+                "detected ixr-r6/ixr-ec/ixr-e2/ixr-e2c chassis, creating a dummy network device for SFM connection"
             )
             res.append(f"-device virtio-net-pci,netdev=dummy,mac={vrnetlab.gen_mac(0)}")
             res.append("-netdev tap,ifname=sfm-dummy,id=dummy,script=no,downscript=no")
@@ -891,6 +958,7 @@ class SROS_cp(SROS_vm):
 
         ram: int = vrnetlab.getMem(self.role, variant.get("cp").get("min_ram"))
         cpu: int = vrnetlab.getCpu(self.role, variant.get("cp").get("cpu"))
+        slot: str = variant.get("cp").get("slot")
 
         super(SROS_cp, self).__init__(
             username,
@@ -912,6 +980,11 @@ class SROS_cp(SROS_vm):
             f"system-base-mac={vrnetlab.gen_mac(0)} {variant['cp']['timos_line']}"
         ]
         self.logger.info("Acting timos line: {}".format(self.smbios))
+
+        for cf in ["cf1", "cf2"]:
+            size: str = variant.get("cp").get(cf)
+            if size is not None:
+                self.attach_cf(slot=slot, cfname=cf, size=size)
 
     def start(self):
         # use parent class start() function
@@ -995,7 +1068,7 @@ class SROS_lc(SROS_vm):
         res.extend(
             ["-device", "virtio-net-pci,netdev=mgmt,mac=%s" % vrnetlab.gen_mac(0)]
         )
-        res.extend(["-netdev", "user,id=mgmt,restrict=y"]) # dummy nic, not used
+        res.extend(["-netdev", "user,id=mgmt,restrict=y"])  # dummy nic, not used
         # internal control plane interface to vFPC
         res.extend(
             ["-device", "virtio-net-pci,netdev=vfpc-int,mac=%s" % vrnetlab.gen_mac(0)]
